@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "context-mode": {
+      "type": "stdio",
+      "command": "context-mode"
+    },
+    "gitnexus": {
+      "type": "stdio",
+      "command": "gitnexus",
+      "args": ["mcp"]
+    }
+  },
+  "inputs": []
+}
