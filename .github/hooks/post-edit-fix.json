@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "node ./scripts/post-edit-fix-hook.mjs",
+        "timeout": 60
+      }
+    ]
+  }
+}

@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import process from "node:process";
 
-const supportedExtensions = /\.(?:[cm]?[jt]s|json|jsonc)$/i;
+const supportedExtensions = /\.(?:[cm]?[jt]s|json|jsonc|ya?ml|mdx)$/i;
+const eslintExtensions = /\.(?:[cm]?[jt]s)$/i;
 const files = process.argv.slice(2);
 const pnpmExecPath = process.env.npm_execpath;
 
@@ -22,6 +23,10 @@ if (invalidPaths.length > 0) {
 
 const codeFiles = files.filter((filePath) =>
   supportedExtensions.test(filePath)
+);
+
+const eslintFiles = codeFiles.filter((filePath) =>
+  eslintExtensions.test(filePath)
 );
 
 if (codeFiles.length !== files.length) {
@@ -47,5 +52,8 @@ const run = (args) => {
   }
 };
 
-run(["exec", "eslint", "--fix", ...codeFiles]);
+if (eslintFiles.length > 0) {
+  run(["exec", "eslint", "--fix", ...eslintFiles]);
+}
+
 run(["exec", "prettier", "--write", ...codeFiles]);
