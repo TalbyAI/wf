@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,7 +17,7 @@ import {
 
 describe("core package", () => {
   it("describes the runtime", () => {
-    expect(describeCore()).toBe("workflow runtime ready (2 built-in step)");
+    expect(describeCore()).toBe("workflow runtime ready (3 built-in step)");
   });
 
   it("parses a simple workflow", () => {
@@ -417,6 +417,137 @@ describe("core package", () => {
     ).toBe(true);
   });
 
+  it("writes an artifact from prior step output and records artifact metadata", async () => {
+    const tempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "talby-core-write-file-")
+    );
+    const workflowFilePath = path.join(tempRoot, "workflow.yaml");
+    const runDirectory = path.join(tempRoot, "run");
+
+    await writeFile(
+      workflowFilePath,
+      [
+        "name: write-file-demo",
+        "steps:",
+        "  - id: ask",
+        "    type: core.prompt",
+        "    prompt: Draft ${inputs.idea}",
+        "  - id: persist",
+        "    type: core.write-file",
+        "    path: outputs/result.txt",
+        "    content: ${steps.ask.output.answer}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await runWorkflowFile({
+      workflowFilePath,
+      runDirectory,
+      inputs: {
+        idea: "workflow runner"
+      },
+      stdout: { log() {} },
+      promptBackend: {
+        async generate(request) {
+          return `answer:${request.prompt}`;
+        }
+      }
+    });
+
+    const artifactPath = path.join(runDirectory, "outputs", "result.txt");
+
+    expect(await readFile(artifactPath, "utf8")).toBe(
+      "answer:Draft workflow runner"
+    );
+    expect(result.record.steps).toEqual([
+      {
+        id: "ask",
+        type: "core.prompt",
+        status: "succeeded",
+        output: {
+          answer: "answer:Draft workflow runner"
+        }
+      },
+      {
+        id: "persist",
+        type: "core.write-file",
+        status: "succeeded",
+        output: {
+          path: artifactPath,
+          bytes: Buffer.byteLength("answer:Draft workflow runner", "utf8")
+        }
+      }
+    ]);
+    expect(result.record.artifacts).toEqual([
+      {
+        stepId: "persist",
+        path: artifactPath,
+        bytes: Buffer.byteLength("answer:Draft workflow runner", "utf8")
+      }
+    ]);
+  });
+
+  it("fails when a write-file step cannot persist its artifact", async () => {
+    const tempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "talby-core-write-file-fail-")
+    );
+    const workflowFilePath = path.join(tempRoot, "workflow.yaml");
+    const runDirectory = path.join(tempRoot, "run");
+
+    await writeFile(
+      workflowFilePath,
+      [
+        "name: write-file-fail",
+        "steps:",
+        "  - id: persist",
+        "    type: core.write-file",
+        "    path: outputs/result.txt",
+        "    content: blocked",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await expect(
+      runWorkflowFile({
+        workflowFilePath,
+        runDirectory,
+        stdout: { log() {} },
+        fileSystem: {
+          mkdir,
+          readFile,
+          async writeFile(filePath, data, options) {
+            if (
+              typeof filePath === "string" &&
+              filePath.endsWith(path.join("outputs", "result.txt"))
+            ) {
+              throw new Error("disk full");
+            }
+
+            return writeFile(filePath, data, options);
+          }
+        }
+      })
+    ).rejects.toThrow(
+      `Workflow failed: disk full Inspect ${path.join(runDirectory, "run-log.json")} for details.`
+    );
+
+    const record = JSON.parse(
+      await readFile(path.join(runDirectory, "run-log.json"), "utf8")
+    );
+
+    expect(record.steps).toEqual([
+      {
+        id: "persist",
+        type: "core.write-file",
+        status: "failed",
+        error: "disk full"
+      }
+    ]);
+    expect(record.artifacts).toEqual([]);
+  });
+
   it("runs interpolation through the shared resolver before a log step executes", async () => {
     const tempRoot = await mkdtemp(
       path.join(os.tmpdir(), "talby-core-resolve-")
@@ -510,7 +641,7 @@ describe("core package", () => {
         ])
       })
     ).rejects.toThrow(
-      `Workflow failed. Inspect ${path.join(runDirectory, "run-log.json")} for details.`
+      `Workflow failed: boom Inspect ${path.join(runDirectory, "run-log.json")} for details.`
     );
 
     const record = JSON.parse(

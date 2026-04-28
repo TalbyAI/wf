@@ -19,6 +19,8 @@ export interface WorkflowStep {
   message?: string;
   prompt?: string;
   promptFile?: string;
+  content?: string;
+  path?: string;
 }
 
 export interface PromptRequest {
@@ -37,13 +39,15 @@ export interface StepExecutionContext {
   readonly workflow: WorkflowDefinition;
   readonly step: WorkflowStep;
   readonly workflowFilePath: string;
+  readonly runDirectory: string;
   readonly inputs: Record<string, unknown>;
   readonly stepOutputs: Record<string, Record<string, unknown>>;
   readonly runId: string;
   readonly attempt: number;
-  readonly fileSystem: Pick<FileSystem, "readFile">;
+  readonly fileSystem: Pick<FileSystem, "mkdir" | "readFile" | "writeFile">;
   readonly promptBackend: PromptBackend | undefined;
   readonly log: (message: string) => void;
+  readonly recordArtifact: (artifact: WorkflowArtifactRecord) => void;
 }
 
 export interface StepExecutionResult {
@@ -84,7 +88,14 @@ export interface WorkflowRunRecord {
     output?: Record<string, unknown>;
     error?: string;
   }>;
+  artifacts: WorkflowArtifactRecord[];
   logs: RunLogEntry[];
+}
+
+export interface WorkflowArtifactRecord {
+  stepId: string;
+  path: string;
+  bytes: number;
 }
 
 interface FileSystem {
@@ -184,9 +195,59 @@ const corePromptStep: StepDefinition = {
   }
 };
 
+const coreWriteFileStep: StepDefinition = {
+  type: "core.write-file",
+  validate(step) {
+    if (typeof step.path !== "string" || step.path.length === 0) {
+      throw new Error(`Workflow step ${step.id} is missing a path.`);
+    }
+
+    if (typeof step.content !== "string" || step.content.length === 0) {
+      throw new Error(`Workflow step ${step.id} is missing content.`);
+    }
+  },
+  async execute(context) {
+    const targetPath = context.step.path;
+    const content = context.step.content;
+
+    if (!targetPath) {
+      throw new Error(`Step "${context.step.id}" is missing a path.`);
+    }
+
+    if (!content) {
+      throw new Error(`Step "${context.step.id}" is missing content.`);
+    }
+
+    const resolvedPath = path.isAbsolute(targetPath)
+      ? targetPath
+      : path.resolve(context.runDirectory, targetPath);
+
+    await context.fileSystem.mkdir(path.dirname(resolvedPath), {
+      recursive: true
+    });
+    await context.fileSystem.writeFile(resolvedPath, content, "utf8");
+
+    const artifact = {
+      stepId: context.step.id,
+      path: resolvedPath,
+      bytes: Buffer.byteLength(content, "utf8")
+    };
+
+    context.recordArtifact(artifact);
+
+    return {
+      output: {
+        path: resolvedPath,
+        bytes: artifact.bytes
+      }
+    };
+  }
+};
+
 export const builtInStepRegistry: StepRegistry = new Map([
   [coreLogStep.type, coreLogStep],
-  [corePromptStep.type, corePromptStep]
+  [corePromptStep.type, corePromptStep],
+  [coreWriteFileStep.type, coreWriteFileStep]
 ]);
 
 export function createStepRegistry(
@@ -230,6 +291,7 @@ export async function runWorkflowFile(
 
   const logs: RunLogEntry[] = [];
   const steps: WorkflowRunRecord["steps"] = [];
+  const artifacts: WorkflowRunRecord["artifacts"] = [];
   const stepOutputs: Record<string, Record<string, unknown>> = {};
 
   const appendLog = (
@@ -277,12 +339,14 @@ export async function runWorkflowFile(
         workflow,
         step: resolvedStep,
         workflowFilePath,
+        runDirectory,
         inputs,
         stepOutputs,
         runId,
         stdout,
         fileSystem,
         promptBackend,
+        artifacts,
         appendLog
       });
 
@@ -339,6 +403,7 @@ export async function runWorkflowFile(
     workflowFilePath,
     runDirectory,
     steps,
+    artifacts,
     logs
   };
   const logFilePath = path.join(runDirectory, "run-log.json");
@@ -350,7 +415,12 @@ export async function runWorkflowFile(
   );
 
   if (status === "failed") {
-    throw new Error(`Workflow failed. Inspect ${logFilePath} for details.`);
+    const failure = steps.findLast((step) => step.status === "failed");
+    const reason = failure?.error ?? "Unknown workflow error.";
+
+    throw new Error(
+      `Workflow failed: ${reason} Inspect ${logFilePath} for details.`
+    );
   }
 
   return {
@@ -469,21 +539,11 @@ function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
     throw new Error(`Workflow step ${id} is missing a type.`);
   }
 
-  const message = step.message;
-  const prompt = step.prompt;
-  const promptFile = step.promptFile;
-
-  if (message !== undefined && typeof message !== "string") {
-    throw new Error(`Workflow step ${id} has an invalid message.`);
-  }
-
-  if (prompt !== undefined && typeof prompt !== "string") {
-    throw new Error(`Workflow step ${id} has an invalid prompt.`);
-  }
-
-  if (promptFile !== undefined && typeof promptFile !== "string") {
-    throw new Error(`Workflow step ${id} has an invalid promptFile.`);
-  }
+  const message = readOptionalStepString(step, id, "message");
+  const prompt = readOptionalStepString(step, id, "prompt");
+  const promptFile = readOptionalStepString(step, id, "promptFile");
+  const content = readOptionalStepString(step, id, "content");
+  const stepPath = readOptionalStepString(step, id, "path");
 
   return {
     id,
@@ -491,8 +551,24 @@ function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
     retry: parseRetryPolicy(step.retry, id),
     ...(message === undefined ? {} : { message }),
     ...(prompt === undefined ? {} : { prompt }),
-    ...(promptFile === undefined ? {} : { promptFile })
+    ...(promptFile === undefined ? {} : { promptFile }),
+    ...(content === undefined ? {} : { content }),
+    ...(stepPath === undefined ? {} : { path: stepPath })
   };
+}
+
+function readOptionalStepString(
+  step: Record<string, unknown>,
+  stepId: string,
+  fieldName: "message" | "prompt" | "promptFile" | "content" | "path"
+): string | undefined {
+  const value = step[fieldName];
+
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`Workflow step ${stepId} has an invalid ${fieldName}.`);
+  }
+
+  return value;
 }
 
 function parseRetryPolicy(value: unknown, stepId: string): RetryPolicy {
@@ -659,12 +735,14 @@ async function executeStepWithRetry(options: {
   workflow: WorkflowDefinition;
   step: WorkflowStep;
   workflowFilePath: string;
+  runDirectory: string;
   inputs: Record<string, unknown>;
   stepOutputs: Record<string, Record<string, unknown>>;
   runId: string;
   stdout: Pick<Console, "log">;
-  fileSystem: Pick<FileSystem, "readFile">;
+  fileSystem: Pick<FileSystem, "mkdir" | "readFile" | "writeFile">;
   promptBackend: PromptBackend | undefined;
+  artifacts: WorkflowArtifactRecord[];
   appendLog: (
     message: string,
     level: RunLogEntry["level"],
@@ -679,6 +757,7 @@ async function executeStepWithRetry(options: {
         workflow: options.workflow,
         step: options.step,
         workflowFilePath: options.workflowFilePath,
+        runDirectory: options.runDirectory,
         inputs: options.inputs,
         stepOutputs: options.stepOutputs,
         runId: options.runId,
@@ -688,6 +767,9 @@ async function executeStepWithRetry(options: {
         log(message) {
           options.stdout.log(message);
           options.appendLog(message, "info", options.step.id);
+        },
+        recordArtifact(artifact) {
+          options.artifacts.push(artifact);
         }
       });
     } catch (error) {

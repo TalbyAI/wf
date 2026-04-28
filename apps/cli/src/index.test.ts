@@ -12,7 +12,7 @@ const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 describe("cli entrypoint", () => {
   it("formats the welcome message", () => {
     expect(formatWelcome()).toBe(
-      "talby-wf cli ready (workflow runtime ready (2 built-in step))"
+      "talby-wf cli ready (workflow runtime ready (3 built-in step))"
     );
   });
 
@@ -25,7 +25,7 @@ describe("cli entrypoint", () => {
 
     expect(log).toHaveBeenNthCalledWith(
       1,
-      "talby-wf cli ready (workflow runtime ready (2 built-in step))"
+      "talby-wf cli ready (workflow runtime ready (3 built-in step))"
     );
     expect(log).toHaveBeenNthCalledWith(
       2,

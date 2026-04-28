@@ -87,13 +87,13 @@ content can be written to predictable paths and inspected after a run.
 
 Acceptance criteria:
 
-- [ ] `core.write-file` can persist content from prior step outputs
+- [x] `core.write-file` can persist content from prior step outputs
       using the shared resolver.
-- [ ] Written artifacts land in predictable, reviewable paths.
-- [ ] Run metadata records artifact details so users can inspect what
+- [x] Written artifacts land in predictable, reviewable paths.
+- [x] Run metadata records artifact details so users can inspect what
       was produced.
-- [ ] File write failures stop the run and surface a clear CLI-visible error.
-- [ ] Tests cover successful writes and write failures.
+- [x] File write failures stop the run and surface a clear CLI-visible error.
+- [x] Tests cover successful writes and write failures.
 
 ## 5. Polish operator-facing `core.log`
 
