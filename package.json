@@ -1,13 +1,35 @@
 {
   "name": "@talby/twf",
   "version": "0.0.1",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Workflow Runner workspace",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "pnpm -r --if-present run build",
+    "test": "vitest run",
+    "check": "pnpm run check:code && pnpm run check:md",
+    "fix": "pnpm run fix:code && pnpm run fix:md",
+    "check:code": "tsc --noEmit && eslint . && prettier --check .",
+    "fix:code": "tsc --noEmit && eslint . --fix && prettier --write .",
+    "fix:code:files": "node ./scripts/fix-code-files.mjs",
+    "check:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\"",
+    "fix:md": "markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\"",
+    "fix:md:files": "node ./scripts/fix-md-files.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.33.2"
+  "packageManager": "pnpm@10.33.2",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "25.6.0",
+    "eslint": "10.2.1",
+    "globals": "17.5.0",
+    "markdownlint-cli2": "0.22.1",
+    "prettier": "3.8.3",
+    "tsdown": "0.21.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.59.1",
+    "vite": "8.0.10",
+    "vitest": "4.1.5"
+  }
 }
