@@ -12,8 +12,8 @@
     "check:code": "tsc --noEmit && eslint . && prettier --check .",
     "fix:code": "tsc --noEmit && eslint . --fix && prettier --write .",
     "fix:code:files": "node ./scripts/fix-code-files.mjs",
-    "check:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\"",
-    "fix:md": "markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\"",
+    "check:md": "markdownlint-cli2 \"**/*.md\" \"#**/node_modules\"",
+    "fix:md": "markdownlint-cli2 --fix \"**/*.md\" \"#**/node_modules\"",
     "fix:md:files": "node ./scripts/fix-md-files.mjs"
   },
   "keywords": [],

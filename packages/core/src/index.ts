@@ -94,7 +94,7 @@ const coreLogStep: StepDefinition = {
     const message = context.step.message;
 
     if (!message) {
-      throw new Error(`Step \"${context.step.id}\" is missing a message.`);
+      throw new Error(`Step "${context.step.id}" is missing a message.`);
     }
 
     context.log(message);
@@ -114,7 +114,9 @@ export const builtInStepRegistry: StepRegistry = new Map([
 export function createStepRegistry(
   stepDefinitions: Iterable<StepDefinition> = builtInStepRegistry.values()
 ): StepRegistry {
-  return new Map(Array.from(stepDefinitions, (definition) => [definition.type, definition]));
+  return new Map(
+    Array.from(stepDefinitions, (definition) => [definition.type, definition])
+  );
 }
 
 export function describeCore(): string {
@@ -143,13 +145,25 @@ export async function runWorkflowFile(
   const logs: RunLogEntry[] = [];
   const steps: WorkflowRunRecord["steps"] = [];
 
-  const appendLog = (message: string, level: RunLogEntry["level"], stepId?: string): void => {
-    logs.push({
-      timestamp: now().toISOString(),
-      level,
-      stepId,
-      message
-    });
+  const appendLog = (
+    message: string,
+    level: RunLogEntry["level"],
+    stepId?: string
+  ): void => {
+    logs.push(
+      stepId === undefined
+        ? {
+            timestamp: now().toISOString(),
+            level,
+            message
+          }
+        : {
+            timestamp: now().toISOString(),
+            level,
+            stepId,
+            message
+          }
+    );
   };
 
   appendLog(`Starting workflow ${workflow.name}.`, "info");
@@ -161,7 +175,7 @@ export async function runWorkflowFile(
       const definition = registry.get(step.type);
 
       if (!definition) {
-        throw new Error(`No step registered for type \"${step.type}\".`);
+        throw new Error(`No step registered for type "${step.type}".`);
       }
 
       appendLog(`Running step ${step.id} (${step.type}).`, "info", step.id);
@@ -176,12 +190,20 @@ export async function runWorkflowFile(
         }
       });
 
-      steps.push({
-        id: step.id,
-        type: step.type,
-        status: "succeeded",
-        output: result?.output
-      });
+      steps.push(
+        result?.output === undefined
+          ? {
+              id: step.id,
+              type: step.type,
+              status: "succeeded"
+            }
+          : {
+              id: step.id,
+              type: step.type,
+              status: "succeeded",
+              output: result.output
+            }
+      );
 
       appendLog(`Finished step ${step.id}.`, "info", step.id);
     }
@@ -221,7 +243,11 @@ export async function runWorkflowFile(
   };
   const logFilePath = path.join(runDirectory, "run-log.json");
 
-  await fileSystem.writeFile(logFilePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  await fileSystem.writeFile(
+    logFilePath,
+    `${JSON.stringify(record, null, 2)}\n`,
+    "utf8"
+  );
 
   if (status === "failed") {
     throw new Error(`Workflow failed. Inspect ${logFilePath} for details.`);
@@ -280,11 +306,16 @@ function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
     throw new Error(`Workflow step ${id} has an invalid message.`);
   }
 
-  return {
-    id,
-    type,
-    message
-  };
+  return message === undefined
+    ? {
+        id,
+        type
+      }
+    : {
+        id,
+        type,
+        message
+      };
 }
 
 function createRunId(now: Date): string {

@@ -20,7 +20,9 @@ describe("core package", () => {
 
   it("parses a simple workflow", () => {
     expect(
-      parseWorkflowDefinition(`name: demo\nsteps:\n  - id: hello\n    type: core.log\n    message: hi\n`)
+      parseWorkflowDefinition(
+        `name: demo\nsteps:\n  - id: hello\n    type: core.log\n    message: hi\n`
+      )
     ).toEqual({
       name: "demo",
       steps: [
@@ -67,11 +69,18 @@ describe("core package", () => {
         workflowFilePath,
         runDirectory,
         stdout: { log() {} },
-        registry: createStepRegistry([...builtInStepRegistry.values(), failingStep])
+        registry: createStepRegistry([
+          ...builtInStepRegistry.values(),
+          failingStep
+        ])
       })
-    ).rejects.toThrow(`Workflow failed. Inspect ${path.join(runDirectory, "run-log.json")} for details.`);
+    ).rejects.toThrow(
+      `Workflow failed. Inspect ${path.join(runDirectory, "run-log.json")} for details.`
+    );
 
-    const record = JSON.parse(await readFile(path.join(runDirectory, "run-log.json"), "utf8"));
+    const record = JSON.parse(
+      await readFile(path.join(runDirectory, "run-log.json"), "utf8")
+    );
 
     expect(record.status).toBe("failed");
     expect(record.steps).toEqual([
@@ -90,6 +99,10 @@ describe("core package", () => {
         error: "boom"
       }
     ]);
-    expect(record.logs.some((entry: { message: string }) => entry.message.includes("should not run"))).toBe(false);
+    expect(
+      record.logs.some((entry: { message: string }) =>
+        entry.message.includes("should not run")
+      )
+    ).toBe(false);
   });
 });

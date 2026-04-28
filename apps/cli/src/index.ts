@@ -22,7 +22,9 @@ export async function main(
 
   if (!command || command === "help" || command === "--help") {
     dependencies.stdout.log(formatWelcome());
-    dependencies.stdout.log("Usage: twf run <workflow.yaml> [--run-dir <path>]");
+    dependencies.stdout.log(
+      "Usage: twf run <workflow.yaml> [--run-dir <path>]"
+    );
     return 0;
   }
 
@@ -41,16 +43,25 @@ export async function main(
   const runDirectory = readRunDirectory(args.slice(2));
 
   try {
-    const result = await runWorkflowFile({
-      workflowFilePath,
-      runDirectory,
-      stdout: dependencies.stdout
-    });
+    const result = await runWorkflowFile(
+      runDirectory === undefined
+        ? {
+            workflowFilePath,
+            stdout: dependencies.stdout
+          }
+        : {
+            workflowFilePath,
+            runDirectory,
+            stdout: dependencies.stdout
+          }
+    );
 
     dependencies.stdout.log(`Run log: ${result.logFilePath}`);
     return 0;
   } catch (error) {
-    dependencies.stderr.error(error instanceof Error ? error.message : String(error));
+    dependencies.stderr.error(
+      error instanceof Error ? error.message : String(error)
+    );
     return 1;
   }
 }

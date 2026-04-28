@@ -1,8 +1,7 @@
 name: failing-demo
 steps:
-
-- id: first
-  type: core.log
-  message: before failure
-- id: second
-  type: core.missing
+  - id: first
+    type: core.log
+    message: before failure
+  - id: second
+    type: core.missing
