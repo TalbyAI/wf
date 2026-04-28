@@ -17,7 +17,7 @@ import {
 
 describe("core package", () => {
   it("describes the runtime", () => {
-    expect(describeCore()).toBe("workflow runtime ready (1 built-in step)");
+    expect(describeCore()).toBe("workflow runtime ready (2 built-in step)");
   });
 
   it("parses a simple workflow", () => {
@@ -38,6 +38,38 @@ describe("core package", () => {
         }
       ]
     });
+  });
+
+  it("validates prompt steps require exactly one prompt source", () => {
+    expect(() =>
+      validateWorkflowDefinition(
+        parseWorkflowDefinition(
+          [
+            "name: missing-prompt-source",
+            "steps:",
+            "  - id: ask",
+            "    type: core.prompt",
+            ""
+          ].join("\n")
+        )
+      )
+    ).toThrow("Workflow step ask must define either a prompt or promptFile.");
+
+    expect(() =>
+      validateWorkflowDefinition(
+        parseWorkflowDefinition(
+          [
+            "name: duplicate-prompt-source",
+            "steps:",
+            "  - id: ask",
+            "    type: core.prompt",
+            "    prompt: inline",
+            "    promptFile: ./prompt.txt",
+            ""
+          ].join("\n")
+        )
+      )
+    ).toThrow("Workflow step ask cannot define both prompt and promptFile.");
   });
 
   it("validates duplicate ids, missing inputs, and invalid step references before execution", () => {
@@ -214,6 +246,173 @@ describe("core package", () => {
     expect(
       result.record.logs.some(
         (entry) => entry.message === "Retrying step flaky (2/2)."
+      )
+    ).toBe(true);
+  });
+
+  it("runs an inline prompt step and hands normalized output to downstream steps", async () => {
+    const tempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "talby-core-prompt-")
+    );
+    const workflowFilePath = path.join(tempRoot, "workflow.yaml");
+    const runDirectory = path.join(tempRoot, "run");
+    const prompts: string[] = [];
+
+    await writeFile(
+      workflowFilePath,
+      [
+        "name: prompt-inline",
+        "steps:",
+        "  - id: ask",
+        "    type: core.prompt",
+        "    prompt: Draft ${inputs.idea}",
+        "  - id: echo",
+        "    type: core.log",
+        "    message: ${steps.ask.output.answer}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await runWorkflowFile({
+      workflowFilePath,
+      runDirectory,
+      inputs: {
+        idea: "workflow runner"
+      },
+      stdout: { log() {} },
+      promptBackend: {
+        async generate(request) {
+          prompts.push(request.prompt);
+
+          return `answer:${request.prompt}`;
+        }
+      }
+    });
+
+    expect(prompts).toEqual(["Draft workflow runner"]);
+    expect(result.record.steps).toEqual([
+      {
+        id: "ask",
+        type: "core.prompt",
+        status: "succeeded",
+        output: {
+          answer: "answer:Draft workflow runner"
+        }
+      },
+      {
+        id: "echo",
+        type: "core.log",
+        status: "succeeded",
+        output: {
+          message: "answer:Draft workflow runner"
+        }
+      }
+    ]);
+  });
+
+  it("loads prompt content from a file before calling the backend", async () => {
+    const tempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "talby-core-prompt-file-")
+    );
+    const workflowFilePath = path.join(tempRoot, "workflow.yaml");
+    const promptFilePath = path.join(tempRoot, "prompt.txt");
+    const runDirectory = path.join(tempRoot, "run");
+
+    await writeFile(promptFilePath, "Prompt ${inputs.idea}", "utf8");
+    await writeFile(
+      workflowFilePath,
+      [
+        "name: prompt-file",
+        "steps:",
+        "  - id: ask",
+        "    type: core.prompt",
+        "    promptFile: ./prompt.txt",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await runWorkflowFile({
+      workflowFilePath,
+      runDirectory,
+      inputs: {
+        idea: "from file"
+      },
+      stdout: { log() {} },
+      promptBackend: {
+        async generate(request) {
+          return request.prompt;
+        }
+      }
+    });
+
+    expect(result.record.steps).toEqual([
+      {
+        id: "ask",
+        type: "core.prompt",
+        status: "succeeded",
+        output: {
+          answer: "Prompt from file"
+        }
+      }
+    ]);
+  });
+
+  it("retries prompt execution using the validated retry policy", async () => {
+    const tempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "talby-core-prompt-retry-")
+    );
+    const workflowFilePath = path.join(tempRoot, "workflow.yaml");
+    const runDirectory = path.join(tempRoot, "run");
+    let attempts = 0;
+
+    await writeFile(
+      workflowFilePath,
+      [
+        "name: prompt-retry",
+        "steps:",
+        "  - id: ask",
+        "    type: core.prompt",
+        "    prompt: retry me",
+        "    retry:",
+        "      attempts: 2",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await runWorkflowFile({
+      workflowFilePath,
+      runDirectory,
+      stdout: { log() {} },
+      promptBackend: {
+        async generate() {
+          attempts += 1;
+
+          if (attempts === 1) {
+            throw new Error("temporary prompt failure");
+          }
+
+          return "prompt ok";
+        }
+      }
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.record.steps).toEqual([
+      {
+        id: "ask",
+        type: "core.prompt",
+        status: "succeeded",
+        output: {
+          answer: "prompt ok"
+        }
+      }
+    ]);
+    expect(
+      result.record.logs.some(
+        (entry) => entry.message === "Retrying step ask (2/2)."
       )
     ).toBe(true);
   });

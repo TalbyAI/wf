@@ -17,15 +17,32 @@ export interface WorkflowStep {
   type: string;
   retry: RetryPolicy;
   message?: string;
+  prompt?: string;
+  promptFile?: string;
+}
+
+export interface PromptRequest {
+  workflowName: string;
+  stepId: string;
+  runId: string;
+  attempt: number;
+  prompt: string;
+}
+
+export interface PromptBackend {
+  generate(request: PromptRequest): Promise<string>;
 }
 
 export interface StepExecutionContext {
   readonly workflow: WorkflowDefinition;
   readonly step: WorkflowStep;
+  readonly workflowFilePath: string;
   readonly inputs: Record<string, unknown>;
   readonly stepOutputs: Record<string, Record<string, unknown>>;
   readonly runId: string;
   readonly attempt: number;
+  readonly fileSystem: Pick<FileSystem, "readFile">;
+  readonly promptBackend: PromptBackend | undefined;
   readonly log: (message: string) => void;
 }
 
@@ -84,6 +101,7 @@ export interface RunWorkflowFileOptions {
   now?: () => Date;
   registry?: StepRegistry;
   fileSystem?: FileSystem;
+  promptBackend?: PromptBackend | undefined;
 }
 
 export interface RunWorkflowFileResult {
@@ -122,8 +140,53 @@ const coreLogStep: StepDefinition = {
   }
 };
 
+const corePromptStep: StepDefinition = {
+  type: "core.prompt",
+  validate(step) {
+    const hasInlinePrompt =
+      typeof step.prompt === "string" && step.prompt.length > 0;
+    const hasPromptFile =
+      typeof step.promptFile === "string" && step.promptFile.length > 0;
+
+    if (!hasInlinePrompt && !hasPromptFile) {
+      throw new Error(
+        `Workflow step ${step.id} must define either a prompt or promptFile.`
+      );
+    }
+
+    if (hasInlinePrompt && hasPromptFile) {
+      throw new Error(
+        `Workflow step ${step.id} cannot define both prompt and promptFile.`
+      );
+    }
+  },
+  async execute(context) {
+    if (!context.promptBackend) {
+      throw new Error(
+        `Step "${context.step.id}" requires a prompt backend, but none was configured.`
+      );
+    }
+
+    const prompt = await readPromptText(context);
+    const answer = await context.promptBackend.generate({
+      workflowName: context.workflow.name,
+      stepId: context.step.id,
+      runId: context.runId,
+      attempt: context.attempt,
+      prompt
+    });
+
+    return {
+      output: {
+        answer
+      }
+    };
+  }
+};
+
 export const builtInStepRegistry: StepRegistry = new Map([
-  [coreLogStep.type, coreLogStep]
+  [coreLogStep.type, coreLogStep],
+  [corePromptStep.type, corePromptStep]
 ]);
 
 export function createStepRegistry(
@@ -145,6 +208,7 @@ export async function runWorkflowFile(
   const stdout = options.stdout ?? console;
   const now = options.now ?? (() => new Date());
   const registry = options.registry ?? createStepRegistry();
+  const promptBackend = options.promptBackend;
   const workflowFilePath = path.resolve(options.workflowFilePath);
   const inputs = options.inputs ?? {};
   const startedAt = now().toISOString();
@@ -212,10 +276,13 @@ export async function runWorkflowFile(
         definition,
         workflow,
         step: resolvedStep,
+        workflowFilePath,
         inputs,
         stepOutputs,
         runId,
         stdout,
+        fileSystem,
+        promptBackend,
         appendLog
       });
 
@@ -403,23 +470,29 @@ function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
   }
 
   const message = step.message;
+  const prompt = step.prompt;
+  const promptFile = step.promptFile;
 
   if (message !== undefined && typeof message !== "string") {
     throw new Error(`Workflow step ${id} has an invalid message.`);
   }
 
-  return message === undefined
-    ? {
-        id,
-        type,
-        retry: parseRetryPolicy(step.retry, id)
-      }
-    : {
-        id,
-        type,
-        retry: parseRetryPolicy(step.retry, id),
-        message
-      };
+  if (prompt !== undefined && typeof prompt !== "string") {
+    throw new Error(`Workflow step ${id} has an invalid prompt.`);
+  }
+
+  if (promptFile !== undefined && typeof promptFile !== "string") {
+    throw new Error(`Workflow step ${id} has an invalid promptFile.`);
+  }
+
+  return {
+    id,
+    type,
+    retry: parseRetryPolicy(step.retry, id),
+    ...(message === undefined ? {} : { message }),
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(promptFile === undefined ? {} : { promptFile })
+  };
 }
 
 function parseRetryPolicy(value: unknown, stepId: string): RetryPolicy {
@@ -585,10 +658,13 @@ async function executeStepWithRetry(options: {
   definition: StepDefinition;
   workflow: WorkflowDefinition;
   step: WorkflowStep;
+  workflowFilePath: string;
   inputs: Record<string, unknown>;
   stepOutputs: Record<string, Record<string, unknown>>;
   runId: string;
   stdout: Pick<Console, "log">;
+  fileSystem: Pick<FileSystem, "readFile">;
+  promptBackend: PromptBackend | undefined;
   appendLog: (
     message: string,
     level: RunLogEntry["level"],
@@ -602,10 +678,13 @@ async function executeStepWithRetry(options: {
       return await options.definition.execute({
         workflow: options.workflow,
         step: options.step,
+        workflowFilePath: options.workflowFilePath,
         inputs: options.inputs,
         stepOutputs: options.stepOutputs,
         runId: options.runId,
         attempt,
+        fileSystem: options.fileSystem,
+        promptBackend: options.promptBackend,
         log(message) {
           options.stdout.log(message);
           options.appendLog(message, "info", options.step.id);
@@ -685,6 +764,32 @@ function readPath(value: unknown, segments: string[]): unknown {
 
 function createRunId(now: Date): string {
   return now.toISOString().replaceAll(/[.:]/g, "-");
+}
+
+async function readPromptText(context: StepExecutionContext): Promise<string> {
+  if (context.step.prompt) {
+    return context.step.prompt;
+  }
+
+  const promptFile = context.step.promptFile;
+
+  if (!promptFile) {
+    throw new Error(`Step "${context.step.id}" is missing prompt content.`);
+  }
+
+  const promptFilePath = path.resolve(
+    path.dirname(context.workflowFilePath),
+    promptFile
+  );
+  const promptTemplate = await context.fileSystem.readFile(
+    promptFilePath,
+    "utf8"
+  );
+
+  return resolveTemplate(promptTemplate, {
+    inputs: context.inputs,
+    stepOutputs: context.stepOutputs
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

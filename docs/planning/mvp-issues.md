@@ -63,15 +63,15 @@ Prompt results stay in memory for downstream steps until explicitly persisted.
 
 Acceptance criteria:
 
-- [ ] `core.prompt` accepts inline prompt text and prompt content loaded
+- [x] `core.prompt` accepts inline prompt text and prompt content loaded
       from a file.
-- [ ] Prompt execution goes through a narrow adapter interface rather
+- [x] Prompt execution goes through a narrow adapter interface rather
       than leaking backend details into the runner.
-- [ ] Successful prompt execution returns a JSON object shaped as
+- [x] Successful prompt execution returns a JSON object shaped as
       `{ answer: string }`.
-- [ ] Retry behavior for transient prompt failures follows the validated
+- [x] Retry behavior for transient prompt failures follows the validated
       step retry policy.
-- [ ] Tests use a fake or stub backend and verify output normalization
+- [x] Tests use a fake or stub backend and verify output normalization
       plus in-memory output handoff.
 
 ## 4. Make persistence explicit with `core.write-file`
