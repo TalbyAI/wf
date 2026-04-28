@@ -41,13 +41,13 @@ Reject malformed workflows before any step executes.
 
 Acceptance criteria:
 
-- [ ] Validation rejects duplicate step ids, missing required fields,
+- [x] Validation rejects duplicate step ids, missing required fields,
       and invalid step types.
-- [ ] Validation rejects invalid `${inputs.*}` and
+- [x] Validation rejects invalid `${inputs.*}` and
       `${steps.*.output.*}` references before execution starts.
-- [ ] Retry defaults are applied during validation in a predictable way.
-- [ ] Interpolation is centralized and works across supported step fields.
-- [ ] Unit tests cover valid workflows and the expected validation failures.
+- [x] Retry defaults are applied during validation in a predictable way.
+- [x] Interpolation is centralized and works across supported step fields.
+- [x] Unit tests cover valid workflows and the expected validation failures.
 
 ## 3. Ship `core.prompt` with a narrow backend adapter
 

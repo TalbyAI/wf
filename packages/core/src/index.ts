@@ -8,16 +8,24 @@ export interface WorkflowDefinition {
   steps: WorkflowStep[];
 }
 
+export interface RetryPolicy {
+  attempts: number;
+}
+
 export interface WorkflowStep {
   id: string;
   type: string;
+  retry: RetryPolicy;
   message?: string;
 }
 
 export interface StepExecutionContext {
   readonly workflow: WorkflowDefinition;
   readonly step: WorkflowStep;
+  readonly inputs: Record<string, unknown>;
+  readonly stepOutputs: Record<string, Record<string, unknown>>;
   readonly runId: string;
+  readonly attempt: number;
   readonly log: (message: string) => void;
 }
 
@@ -31,6 +39,7 @@ export type StepHandler = (
 
 export interface StepDefinition {
   readonly type: string;
+  readonly validate?: (step: WorkflowStep) => void;
   readonly execute: StepHandler;
 }
 
@@ -70,6 +79,7 @@ interface FileSystem {
 export interface RunWorkflowFileOptions {
   workflowFilePath: string;
   runDirectory?: string;
+  inputs?: Record<string, unknown>;
   stdout?: Pick<Console, "log">;
   now?: () => Date;
   registry?: StepRegistry;
@@ -90,6 +100,11 @@ const defaultFileSystem: FileSystem = {
 
 const coreLogStep: StepDefinition = {
   type: "core.log",
+  validate(step) {
+    if (typeof step.message !== "string" || step.message.length === 0) {
+      throw new Error(`Workflow step ${step.id} is missing a message.`);
+    }
+  },
   async execute(context) {
     const message = context.step.message;
 
@@ -131,19 +146,27 @@ export async function runWorkflowFile(
   const now = options.now ?? (() => new Date());
   const registry = options.registry ?? createStepRegistry();
   const workflowFilePath = path.resolve(options.workflowFilePath);
+  const inputs = options.inputs ?? {};
   const startedAt = now().toISOString();
   const rawWorkflow = await fileSystem.readFile(workflowFilePath, "utf8");
-  const workflow = parseWorkflowDefinition(rawWorkflow);
+  const workflow = validateWorkflowDefinition(
+    parseWorkflowDefinition(rawWorkflow),
+    {
+      registry,
+      inputs
+    }
+  );
   const runId = createRunId(now());
   const runDirectory =
-    options.runDirectory !== undefined
-      ? path.resolve(options.runDirectory)
-      : path.join(path.dirname(workflowFilePath), ".talby-runs", runId);
+    options.runDirectory === undefined
+      ? path.join(path.dirname(workflowFilePath), ".talby-runs", runId)
+      : path.resolve(options.runDirectory);
 
   await fileSystem.mkdir(runDirectory, { recursive: true });
 
   const logs: RunLogEntry[] = [];
   const steps: WorkflowRunRecord["steps"] = [];
+  const stepOutputs: Record<string, Record<string, unknown>> = {};
 
   const appendLog = (
     message: string,
@@ -180,15 +203,25 @@ export async function runWorkflowFile(
 
       appendLog(`Running step ${step.id} (${step.type}).`, "info", step.id);
 
-      const result = await definition.execute({
-        workflow,
-        step,
-        runId,
-        log(message) {
-          stdout.log(message);
-          appendLog(message, "info", step.id);
-        }
+      const resolvedStep = resolveWorkflowStep(step, {
+        inputs,
+        stepOutputs
       });
+
+      const result = await executeStepWithRetry({
+        definition,
+        workflow,
+        step: resolvedStep,
+        inputs,
+        stepOutputs,
+        runId,
+        stdout,
+        appendLog
+      });
+
+      if (result?.output !== undefined) {
+        stepOutputs[step.id] = result.output;
+      }
 
       steps.push(
         result?.output === undefined
@@ -284,6 +317,75 @@ export function parseWorkflowDefinition(source: string): WorkflowDefinition {
   };
 }
 
+export interface WorkflowValidationOptions {
+  registry?: StepRegistry;
+  inputs?: Record<string, unknown>;
+}
+
+export function validateWorkflowDefinition(
+  workflow: WorkflowDefinition,
+  options: WorkflowValidationOptions = {}
+): WorkflowDefinition {
+  const registry = options.registry ?? builtInStepRegistry;
+  const inputs = options.inputs ?? {};
+  const seenStepIds = new Set<string>();
+
+  return {
+    name: workflow.name,
+    steps: workflow.steps.map((step) => {
+      if (seenStepIds.has(step.id)) {
+        throw new Error(
+          `Workflow step ids must be unique. Duplicate id "${step.id}".`
+        );
+      }
+
+      seenStepIds.add(step.id);
+
+      const definition = registry.get(step.type);
+
+      if (!definition) {
+        throw new Error(`No step registered for type "${step.type}".`);
+      }
+
+      validateStepReferences(step, {
+        inputs,
+        priorStepIds: seenStepIds
+      });
+
+      const normalizedStep: WorkflowStep = {
+        ...step,
+        retry: normalizeRetryPolicy(step.retry)
+      };
+
+      definition.validate?.(normalizedStep);
+
+      return normalizedStep;
+    })
+  };
+}
+
+export function resolveTemplate(
+  template: string,
+  context: {
+    inputs: Record<string, unknown>;
+    stepOutputs: Record<string, Record<string, unknown>>;
+  }
+): string {
+  return template.replaceAll(/\$\{([^}]+)\}/g, (_match, expression: string) => {
+    const value = resolveReference(expression.trim(), context);
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+
+    return JSON.stringify(value);
+  });
+}
+
 function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
   if (!isRecord(step)) {
     throw new Error(`Workflow step ${index + 1} must be an object.`);
@@ -309,17 +411,280 @@ function parseWorkflowStep(step: unknown, index: number): WorkflowStep {
   return message === undefined
     ? {
         id,
-        type
+        type,
+        retry: parseRetryPolicy(step.retry, id)
       }
     : {
         id,
         type,
+        retry: parseRetryPolicy(step.retry, id),
         message
       };
 }
 
+function parseRetryPolicy(value: unknown, stepId: string): RetryPolicy {
+  if (value === undefined) {
+    return { attempts: 1 };
+  }
+
+  if (!isRecord(value)) {
+    throw new Error(`Workflow step ${stepId} has an invalid retry policy.`);
+  }
+
+  const attempts = value.attempts;
+
+  if (
+    attempts !== undefined &&
+    (typeof attempts !== "number" ||
+      !Number.isInteger(attempts) ||
+      attempts < 1)
+  ) {
+    throw new Error(
+      `Workflow step ${stepId} has an invalid retry attempt count.`
+    );
+  }
+
+  return {
+    attempts: typeof attempts === "number" ? attempts : 1
+  };
+}
+
+function normalizeRetryPolicy(retry: RetryPolicy | undefined): RetryPolicy {
+  return {
+    attempts: retry?.attempts ?? 1
+  };
+}
+
+function validateStepReferences(
+  step: WorkflowStep,
+  context: {
+    inputs: Record<string, unknown>;
+    priorStepIds: ReadonlySet<string>;
+  }
+): void {
+  for (const expression of collectReferences(step)) {
+    validateReference(expression, step.id, context);
+  }
+}
+
+function collectReferences(value: unknown): string[] {
+  if (typeof value === "string") {
+    return Array.from(value.matchAll(/\$\{([^}]+)\}/g), (match) => {
+      const expression = match[1];
+
+      return expression === undefined ? "" : expression.trim();
+    }).filter((expression) => expression.length > 0);
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectReferences(item));
+  }
+
+  if (isRecord(value)) {
+    return Object.entries(value)
+      .filter(([key]) => key !== "id" && key !== "type" && key !== "retry")
+      .flatMap(([, nestedValue]) => collectReferences(nestedValue));
+  }
+
+  return [];
+}
+
+function validateReference(
+  expression: string,
+  stepId: string,
+  context: {
+    inputs: Record<string, unknown>;
+    priorStepIds: ReadonlySet<string>;
+  }
+): void {
+  const segments = expression.split(".");
+
+  if (segments[0] === "inputs") {
+    if (segments.length < 2) {
+      throw new Error(
+        `Workflow step ${stepId} has an invalid reference "${expression}".`
+      );
+    }
+
+    if (!hasPath(context.inputs, segments.slice(1))) {
+      throw new Error(
+        `Workflow step ${stepId} references missing input "${expression}".`
+      );
+    }
+
+    return;
+  }
+
+  if (segments[0] === "steps") {
+    if (segments.length < 4 || segments[2] !== "output") {
+      throw new Error(
+        `Workflow step ${stepId} has an invalid reference "${expression}".`
+      );
+    }
+
+    const referencedStepId = segments[1];
+
+    if (
+      referencedStepId === undefined ||
+      !context.priorStepIds.has(referencedStepId)
+    ) {
+      throw new Error(
+        `Workflow step ${stepId} references step "${referencedStepId ?? "unknown"}" before it is available.`
+      );
+    }
+
+    return;
+  }
+
+  throw new Error(
+    `Workflow step ${stepId} has an invalid reference "${expression}".`
+  );
+}
+
+function resolveWorkflowStep(
+  step: WorkflowStep,
+  context: {
+    inputs: Record<string, unknown>;
+    stepOutputs: Record<string, Record<string, unknown>>;
+  }
+): WorkflowStep {
+  return resolveValue(step, context) as WorkflowStep;
+}
+
+function resolveValue(
+  value: unknown,
+  context: {
+    inputs: Record<string, unknown>;
+    stepOutputs: Record<string, Record<string, unknown>>;
+  }
+): unknown {
+  if (typeof value === "string") {
+    return resolveTemplate(value, context);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveValue(item, context));
+  }
+
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => {
+        if (key === "id" || key === "type" || key === "retry") {
+          return [key, nestedValue];
+        }
+
+        return [key, resolveValue(nestedValue, context)];
+      })
+    );
+  }
+
+  return value;
+}
+
+async function executeStepWithRetry(options: {
+  definition: StepDefinition;
+  workflow: WorkflowDefinition;
+  step: WorkflowStep;
+  inputs: Record<string, unknown>;
+  stepOutputs: Record<string, Record<string, unknown>>;
+  runId: string;
+  stdout: Pick<Console, "log">;
+  appendLog: (
+    message: string,
+    level: RunLogEntry["level"],
+    stepId?: string
+  ) => void;
+}): Promise<StepExecutionResult | void> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= options.step.retry.attempts; attempt += 1) {
+    try {
+      return await options.definition.execute({
+        workflow: options.workflow,
+        step: options.step,
+        inputs: options.inputs,
+        stepOutputs: options.stepOutputs,
+        runId: options.runId,
+        attempt,
+        log(message) {
+          options.stdout.log(message);
+          options.appendLog(message, "info", options.step.id);
+        }
+      });
+    } catch (error) {
+      lastError = error;
+
+      if (attempt >= options.step.retry.attempts) {
+        break;
+      }
+
+      options.appendLog(
+        `Retrying step ${options.step.id} (${attempt + 1}/${options.step.retry.attempts}).`,
+        "info",
+        options.step.id
+      );
+    }
+  }
+
+  throw lastError;
+}
+
+function resolveReference(
+  expression: string,
+  context: {
+    inputs: Record<string, unknown>;
+    stepOutputs: Record<string, Record<string, unknown>>;
+  }
+): unknown {
+  const segments = expression.split(".");
+
+  if (segments[0] === "inputs") {
+    return readPath(context.inputs, segments.slice(1));
+  }
+
+  if (segments[0] === "steps" && segments[2] === "output") {
+    const stepId = segments[1];
+
+    if (stepId === undefined) {
+      throw new Error(`Invalid reference "${expression}".`);
+    }
+
+    return readPath(context.stepOutputs[stepId], segments.slice(3));
+  }
+
+  throw new Error(`Invalid reference "${expression}".`);
+}
+
+function hasPath(value: unknown, segments: string[]): boolean {
+  let current = value;
+
+  for (const segment of segments) {
+    if (!isRecord(current) || !(segment in current)) {
+      return false;
+    }
+
+    current = current[segment];
+  }
+
+  return true;
+}
+
+function readPath(value: unknown, segments: string[]): unknown {
+  let current = value;
+
+  for (const segment of segments) {
+    if (!isRecord(current) || !(segment in current)) {
+      throw new Error(`Missing value for reference segment "${segment}".`);
+    }
+
+    current = current[segment];
+  }
+
+  return current;
+}
+
 function createRunId(now: Date): string {
-  return now.toISOString().replace(/[.:]/g, "-");
+  return now.toISOString().replaceAll(/[.:]/g, "-");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
