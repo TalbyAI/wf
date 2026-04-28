@@ -5,6 +5,7 @@
   "description": "Workflow Runner workspace",
   "scripts": {
     "build": "pnpm -r --if-present run build",
+    "cli": "node ./apps/cli/dist/index.mjs",
     "test": "vitest run",
     "check": "pnpm run check:code && pnpm run check:md",
     "fix": "pnpm run fix:code && pnpm run fix:md",

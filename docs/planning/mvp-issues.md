@@ -18,14 +18,14 @@ workflow that runs a `core.log` step and emits inspectable logs.
 
 Acceptance criteria:
 
-- [ ] The repository has a runnable TypeScript CLI entry point for
+- [x] The repository has a runnable TypeScript CLI entry point for
       workflow execution.
-- [ ] A YAML workflow with at least one `core.log` step can run end to end.
-- [ ] The runtime creates inspectable run logs and fails the run
+- [x] A YAML workflow with at least one `core.log` step can run end to end.
+- [x] The runtime creates inspectable run logs and fails the run
       immediately on step failure.
-- [ ] The built-in step registry uses namespaced step types and a shared
+- [x] The built-in step registry uses namespaced step types and a shared
       execution contract.
-- [ ] A smoke or integration test covers the CLI path for the demo workflow.
+- [x] A smoke or integration test covers the CLI path for the demo workflow.
 
 ## 2. Add fail-fast validation and `${...}` resolution
 

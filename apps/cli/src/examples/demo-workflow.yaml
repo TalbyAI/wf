@@ -1,0 +1,5 @@
+name: demo-workflow
+steps:
+  - id: announce
+    type: core.log
+    message: Hello from the Talby workflow runner.

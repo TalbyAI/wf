@@ -157,3 +157,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Talby Workflow Runner
+.talby-runs/
