@@ -9,7 +9,18 @@
 
 ## Objective
 
-Define the canonical intermediate representation for an execution system based on workflows, typed steps, structured control flow, and runtime-enforced capabilities.
+Define the canonical intermediate representation for an execution system based on workflows, typed executable types, structured control flow, and runtime-enforced capabilities.
+
+## Terminology alignment with Core Design
+
+`docs/planning/core-design.md` is normative for core terminology and semantics.
+This document may retain older terms in historical sections; interpret them with the following mappings:
+
+- `ActionStep` means an atomic `ExecutableNode`.
+- `StepTypeReference` means the versioned executable type identifier referenced by `ExecutableNode`.
+- References to step type contracts correspond to `ExecutableDefinition`.
+
+Future edits should prefer canonical names from `docs/planning/core-design.md`, or provide explicit local mappings when legacy names are retained for context.
 
 ## Context
 
@@ -65,7 +76,7 @@ An initial working specification exists below. It is strong enough to guide foll
 ## Risks
 
 - context and scoped values may become an implicit dependency layer if their rules stay too loose
-- `FanIn` and typed failures still need precise structure
+- extension operators such as `FanIn`, and typed failures, still need precise structure before adoption
 - capability namespaces may become weak metadata unless the grammar and enforcement model are explicit
 - step version compatibility is still schema-first, which may leave semantic drift under-specified
 
@@ -130,8 +141,8 @@ At minimum, node kinds should include:
 - `Loop`
 - `Try`
 - `Parallel`
-- `ParallelMap`
-- `FanIn`
+
+For the initial core line, `ParallelMap` and `FanIn` are out of scope and should be treated as future extension operators.
 
 Each node should have:
 
@@ -190,9 +201,10 @@ That context may expose:
 - workflow inputs
 - outputs from previously executed steps
 - scope variables
-- runtime-provided environment variables
-- runtime-provided secrets
 - operational metadata such as execution identifiers
+
+Environment-derived values and secrets are not ambient context fields.
+They become available to node logic only when explicitly bound into node inputs or scoped values by workflow configuration.
 
 #### Context Rules
 
@@ -216,7 +228,8 @@ This does not remove the need for explicit structure. The engine should preserve
 - workflow inputs
 - step outputs
 - scoped variables
-- runtime environment and secrets
+- explicitly imported environment-derived values
+- explicitly imported secrets-derived values
 
 This distinction matters for validation, replay, and security.
 
@@ -258,9 +271,10 @@ The author, not the runtime, decides where concurrency exists.
 - branch-level policies
 - result ordering semantics, when relevant
 
-#### ParallelMap
+#### ParallelMap (future extension)
 
 `ParallelMap` applies a structured child workflow to each item of an input collection.
+It is out of scope for the initial core line.
 
 It may expose settings such as:
 
@@ -268,9 +282,10 @@ It may expose settings such as:
 - collection ordering behavior
 - item result ordering behavior
 
-#### FanIn
+#### FanIn (future extension)
 
 `FanIn` is an explicit convergence operator.
+It is out of scope for the initial core line.
 
 It must be able to receive structured success and failure outcomes from upstream parallel work, rather than only succeeding when every branch succeeds.
 
@@ -288,8 +303,44 @@ At minimum, the model should support terminal states such as:
 - `Cancelled`
 
 This result model should apply consistently across atomic steps and compound nodes, even if their internal semantics differ.
+`Skipped` means a node was intentionally not executed according to workflow control-flow semantics (for example, a branch not selected by `If`).
+`Skipped` is neither `Failure` nor `Cancelled`.
+The presence of `Skipped` nodes does not, by itself, force workflow failure.
 
 The exact payload of `Failure` and `Cancelled` remains open, but the system should treat execution state as typed data that later operators can inspect.
+
+For atomic executable nodes, the published node output is derived from the handler success return value and validated against the node output schema.
+Handlers do not publish node outputs through context command APIs.
+
+When this model is projected through the public Effect-based workflow API:
+
+- internal `Success` maps to success-channel workflow output,
+- internal `Failure` and `Cancelled` map to `FrameworkError` variants in the fail channel,
+- when cancellation and timeout race, internal `Cancelled` wins for public fail-channel projection,
+- the timeout event in that race is preserved as secondary diagnostic metadata in execution context records,
+- internal `Cancelled` is terminal for public workflow execution and cannot map to a public success payload,
+- any outputs produced before cancellation remain inspection data in execution context records, not public success payload fields,
+- internal `Skipped` remains an inspection detail in execution context data unless explicitly surfaced.
+
+Minimum diagnostic metadata conformance for `Failure`, `Cancelled`, and `Skipped` events:
+
+- `runId`
+- `nodeId`
+- `nodeType`
+- `state`
+- `timestamp`
+- `reasonCode`
+- `executionPath`
+- `eventRole` (`primary` or `secondary`)
+
+Optional but recommended:
+
+- `reasonMessage`
+- `parentNodeId`
+
+`executionPath` must be encoded as an ordered array of `nodeId` values from the workflow root to the current node.
+`timestamp` must be encoded as an RFC 3339 / ISO 8601 UTC instant (for example, `2026-05-01T11:22:13.123Z`).
+`nodeType` must use the canonical versioned executable type identifier (for example, `core.log@1`), not an engine-local free-form label.
 
 ### Retry And Policy Model
 
@@ -381,7 +432,7 @@ The following are intentionally out of scope for this first specification:
 
 The following questions remain open and should likely become separate design notes:
 
-- What is the exact schema of `Failure`, `Skipped`, and `Cancelled` payloads?
+- What is the exact schema of `Failure` and `Cancelled` payloads beyond the required diagnostic metadata envelope?
 - How should conditions be represented declaratively without creating a second programming language?
 - How should `FanIn` represent partial success, branch metadata, and error aggregation?
 - What is the exact grammar for custom capabilities and namespaced permission declarations?

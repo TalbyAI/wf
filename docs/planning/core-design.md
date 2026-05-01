@@ -2,9 +2,34 @@
 
 ## Status
 
-This document records the current core design decisions for Talby's workflow engine.
+This document is normative for Talby's workflow engine core model and execution semantics.
+The implementation should be derived from this document, and other planning documents must align with it.
 
 It replaces the earlier concept sketch. The goal is to describe the concrete model the codebase should implement, aligned with the IR specification and the Effect integration blueprint.
+
+## Normative precedence
+
+When documents disagree, use this precedence order:
+
+1. `docs/planning/core-design.md` is the normative source for core model, semantics, and terminology.
+2. `docs/planning/execution-workflow-ir-specification.md` is supporting IR analysis and may retain historical terms.
+3. `docs/planning/effect-integration-blueprint.md` is integration guidance for runtime and API design.
+
+Supporting documents must either adopt canonical terms directly or include an explicit terminology mapping section.
+
+## Terminology mapping (canonical vs legacy)
+
+Canonical terms in this document:
+
+- `ExecutableDefinition`: reusable, versioned executable type contract.
+- `ExecutableNode`: authored workflow node instance that references an executable type id and binds configuration and inputs.
+
+Legacy or alias terms that may appear in supporting documents:
+
+- `ActionStep` maps to an atomic `ExecutableNode`.
+- `StepTypeReference` maps to the versioned executable type identifier referenced by `ExecutableNode`.
+
+When a supporting document uses a legacy term, it must define this mapping explicitly near first use.
 
 ## Core Decisions
 
@@ -84,9 +109,9 @@ This avoids hidden output rules and keeps persistence and binding simple.
 
 ### 9. Atomic handler return value is the published output
 
-- For atomic executable nodes, the handler success value becomes the node's published output by default.
+- For atomic executable nodes, the handler success value is the node's published output.
 - The engine validates that value against the node definition's `outputSchema`.
-- Handlers do not need to publish outputs procedurally through context for the common case.
+- Handlers must not publish node outputs procedurally through execution context commands.
 
 This keeps handlers idiomatic for Effect and keeps output typing straightforward.
 
@@ -120,6 +145,23 @@ This allows expressive bindings without turning the IR into a second unrestricte
 - The workflow also declares explicit output bindings that map allowed sources into that schema.
 
 This keeps the workflow contract stable even when internal orchestration changes.
+
+### 13. Initial core control-flow scope is intentionally bounded
+
+- The initial core control-flow set is: `Sequence`, `If`, `Loop`, `Try`, and `Parallel`.
+- `ParallelMap` and `FanIn` are intentionally out of scope for the initial core line.
+- They may be specified later as explicit extensions once their semantics are fully defined.
+
+This keeps the first implementation target precise and avoids semantic ambiguity in early engine behavior.
+
+### 14. Internal execution states and public API results are intentionally different layers
+
+- The engine runtime tracks internal terminal execution states such as `Success`, `Failure`, `Skipped`, and `Cancelled`.
+- Public workflow execution APIs remain success-output oriented and do not expose those internal states as a direct success payload.
+- Internal `Failure` and `Cancelled` states are projected to the Effect fail channel as `FrameworkError` variants.
+- Internal `Skipped` state remains an execution detail available through execution context diagnostics and artifacts, not a default public payload field.
+
+This keeps runtime semantics expressive while preserving a clean and stable public contract.
 
 ## Core Model
 
@@ -247,6 +289,42 @@ The engine is responsible for:
 - Public execution APIs should remain success-output oriented.
 - Errors should remain in the Effect error channel.
 - Execution details remain accessible through execution context and provider mechanisms, not through a bloated success payload.
+
+### Internal execution-state projection
+
+- Internal runtime states include `Success`, `Failure`, `Skipped`, and `Cancelled`.
+- `Skipped` means a node was intentionally not executed by workflow semantics (for example, a non-selected `If` branch).
+- `Skipped` is not a failure and is not cancellation.
+- Public success returns workflow output only.
+- `Failure` and `Cancelled` are surfaced through the Effect fail channel as `FrameworkError` variants.
+- If cancellation and timeout race in the same execution window, `Cancelled` takes precedence for the public error projection.
+- In that race, timeout is retained as secondary diagnostic data in execution context records.
+- `Cancelled` is terminal for public workflow execution and cannot produce a public success result.
+- If cancellation happens after partial progress, partial outputs remain inspection data in execution context diagnostics and artifacts, not in the public success payload.
+- A workflow may still finish in public success when some nodes are `Skipped`, as long as workflow output bindings and `outputSchema` are satisfied.
+- `Skipped` remains an internal detail unless explicitly surfaced by a dedicated inspection API.
+
+### Diagnostic event metadata (minimum conformance set)
+
+For execution-state diagnostics, engines must record at least the following fields for `Failure`, `Cancelled`, and `Skipped` events:
+
+- `runId`
+- `nodeId`
+- `nodeType`
+- `state`
+- `timestamp`
+- `reasonCode`
+- `executionPath`
+- `eventRole` with values `primary` or `secondary`
+The following fields are optional but recommended:
+
+- `reasonMessage`
+- `parentNodeId`
+
+`executionPath` is required for deterministic cross-engine trace reconstruction and must be an ordered array of `nodeId` values from the workflow root to the current node.
+`timestamp` must be encoded as an RFC 3339 / ISO 8601 UTC instant (for example, `2026-05-01T11:22:13.123Z`).
+`nodeType` must use the canonical versioned executable type identifier (for example, `core.log@1`), not an engine-local free-form label.
+`eventRole` is required to distinguish primary public error projections from secondary contextual events (for example, timeout recorded as secondary when cancellation wins a race).
 
 ## Design Consequences
 

@@ -4,6 +4,17 @@
 **Scope:** Talby Workflow Framework core alpha line (engine-first + Effect runtime)  
 **Release Train:** `0.1.0-alpha` then `0.2.0-alpha`; API may evolve before `1.0.0`
 
+## Terminology alignment with Core Design
+
+`docs/planning/core-design.md` is normative for core model terminology.
+Within this blueprint, interpret terms using the following mapping:
+
+- `StepDefinition` corresponds to an atomic `ExecutableDefinition`.
+- Step instance identifiers (for example `stepId`) correspond to `ExecutableNode.id`.
+- Step type identifiers correspond to the versioned executable type id referenced by `ExecutableNode`.
+
+When this blueprint and Core Design differ in naming, Core Design naming takes precedence.
+
 ---
 
 ## Decision Summary
@@ -12,9 +23,9 @@
 | --- | --- | --- |
 | **Architecture** | Effect-first core with a public `WorkflowEngine` abstraction | Pluggable execution model with stable orchestration contract |
 | **Failure Contract** | Success channel returns only schema-compliant workflow output record; failures live in Effect fail channel (`FrameworkError`) | Keeps success path clean and type-safe while preserving diagnostics |
-| **Execution Context** | Engine-owned `WorkflowExecutionContext` dependency with command API (`recordOutput`, `recordDiagnostic`, `recordArtifact`, `readState`) | Consistent behavior across in-memory and durable engines |
+| **Execution Context** | Engine-owned `WorkflowExecutionContext` dependency with command API (`recordDiagnostic`, `recordArtifact`, `readState`); atomic outputs are published from handler return values | Consistent behavior across in-memory and durable engines |
 | **Persistence Strategy** | Engine decides persistence backend (in-memory default engine, optional Redis/Postgres engines) | Supports both lightweight and robust deployments |
-| **Timeout/Cancellation** | Per-step override ships in `0.1.0-alpha`; precedence is `step > workflow > engine defaults`; engine may enforce hard safety ceilings | Predictable workflow semantics with operator guardrails |
+| **Timeout/Cancellation** | Per-step override ships in `0.1.0-alpha`; precedence is `step > workflow > engine defaults`; engine may enforce hard safety ceilings; if cancellation and timeout race, cancellation wins and timeout is recorded as secondary diagnostic | Predictable workflow semantics with operator guardrails |
 | **Public API Surface** | Usability-first default APIs with hidden requirements (`... , never`) plus advanced lower-level APIs with explicit requirements | Smooth adoption without blocking advanced integrations |
 | **Data Governance** | Persist broad non-sensitive diagnostics by default; prompts, secrets, and raw step payloads are opt-in and redacted by policy | Balances operability with privacy/compliance risk control |
 | **Compatibility** | Thin promise-based compatibility layer in `0.1.0-alpha` and `0.2.0-alpha`; remove before `1.0.0` | Reduces migration friction while keeping cleanup deadline explicit |
@@ -30,9 +41,9 @@
 | DR-002 | 2026-04-30 | Success result contains output only; failure details stay in `FrameworkError` | Locked | Success path now schema-focused |
 | DR-003 | 2026-04-30 | `WorkflowExecutionContext` is engine-owned and stores diagnostics/intermediate state | Locked | Engine decides persistence strategy |
 | DR-004 | 2026-04-30 | Core exposes public `WorkflowEngine`; default engine is in-memory | Locked | Durable engines may use Redis/Postgres |
-| DR-005 | 2026-04-30 | Handlers use context command API (`recordOutput`, `recordDiagnostic`, `recordArtifact`, `readState`) | Locked | Prevents uncontrolled shared-state writes |
+| DR-005 | 2026-04-30 | Handlers use context command API (`recordDiagnostic`, `recordArtifact`, `readState`); atomic output publication is engine-managed from handler return values | Locked | Prevents uncontrolled shared-state writes while keeping output publication unambiguous |
 | DR-006 | 2026-04-30 | Default API hides Effect requirements; advanced API exposes explicit requirements | Locked | Balances ergonomics and extensibility |
-| DR-007 | 2026-04-30 | Timeout precedence is `step > workflow > engine defaults`; engine may enforce hard ceilings | Locked | Ensures predictable behavior across engines |
+| DR-007 | 2026-04-30 | Timeout precedence is `step > workflow > engine defaults`; engine may enforce hard ceilings; cancellation wins timeout races | Locked | Ensures predictable behavior across engines and deterministic public error projection |
 | DR-008 | 2026-04-30 | Data governance persists broad non-sensitive diagnostics; sensitive fields are opt-in + redacted | Locked | Baseline privacy/compliance policy |
 | DR-009 | 2026-04-30 | Promise compatibility shim exists only in `0.1.0-alpha` and `0.2.0-alpha` | Locked | Planned removal before `1.0.0` |
 | DR-010 | 2026-04-30 | Early releases are alpha (`0.1.0-alpha`, `0.2.0-alpha`) | Locked | Allows intentional API evolution pre-1.0 |
@@ -72,6 +83,38 @@ options = {
 
 Success payload is output-only. Error channel carries failure details.
 
+Internal runtime state may still include `Success`, `Failure`, `Skipped`, and `Cancelled` for node/workflow semantics.
+Public API projection keeps this boundary explicit:
+
+- success channel returns workflow output only,
+- `Failure` and `Cancelled` are surfaced in the fail channel as `FrameworkError` variants,
+- if cancellation and timeout race, `Cancelled` is surfaced publicly and timeout is recorded only as secondary diagnostic context,
+- `Cancelled` is terminal for public workflow execution and cannot return a success payload,
+- outputs generated before cancellation are retained only as internal execution-context diagnostics/artifacts,
+- `Skipped` remains an internal execution-context detail by default.
+- `Skipped` means intentionally not executed by workflow semantics and does not imply failure on its own.
+- Workflows may still succeed with `Skipped` nodes when the declared output contract is satisfied.
+
+Diagnostic events referenced by execution context data should follow this minimum conformance set:
+
+- `runId`
+- `nodeId`
+- `nodeType`
+- `state`
+- `timestamp`
+- `reasonCode`
+- `executionPath`
+- `eventRole` (`primary` or `secondary`)
+
+Optional but recommended:
+
+- `reasonMessage`
+- `parentNodeId`
+
+`executionPath` must be encoded as an ordered array of `nodeId` values from the workflow root to the current node.
+`timestamp` must be encoded as an RFC 3339 / ISO 8601 UTC instant (for example, `2026-05-01T11:22:13.123Z`).
+`nodeType` must use the canonical versioned executable type identifier (for example, `core.log@1`), not an engine-local free-form label.
+
 ```typescript
 WorkflowOutputRecord = {
   workflowName,
@@ -101,13 +144,13 @@ ExecutionError = {
 ### Execution Context and Handlers
 
 Internal handlers use Effect and interact with context through command methods.
+Atomic node output publication is engine-managed from the handler success return value.
 
 ```typescript
 StepHandler<T> = (context) => Effect<T, FrameworkError, Dependencies>
 
 WorkflowExecutionContext = {
   readState(key): Effect<unknown, FrameworkError, never>,
-  recordOutput(stepId, output): Effect<void, FrameworkError, never>,
   recordDiagnostic(event): Effect<void, FrameworkError, never>,
   recordArtifact(artifact): Effect<void, FrameworkError, never>
 }
@@ -171,12 +214,14 @@ packages/core/
    - Remove error fields from success payload
 
 4. **Execution Context Command API**
-   - Add `recordOutput`, `recordDiagnostic`, `recordArtifact`, `readState`
+   - Add `recordDiagnostic`, `recordArtifact`, `readState`
+   - Publish atomic node output from handler success return values and validate against node `outputSchema`
    - In-memory default engine stores context in memory (optional audit logging)
 
 5. **Timeout/Cancellation Baseline**
    - Ship per-step timeout override in `0.1.0-alpha`
    - Implement precedence rule: `step > workflow > engine defaults`
+   - If timeout and cancellation race, surface `CancellationError` and record timeout as secondary diagnostic context
    - Allow engine hard safety ceilings
 
 6. **Alpha Compatibility Shim**
@@ -211,7 +256,7 @@ packages/core/
 | Concern | Test Type | Notes |
 | --- | --- | --- |
 | **Effect Semantics** | Unit | Handler composition, error propagation, layer behavior |
-| **Timeout/Cancellation** | Integration | Step override, workflow defaults, engine ceilings, cancellation mid-step |
+| **Timeout/Cancellation** | Integration | Step override, workflow defaults, engine ceilings, cancellation mid-step, and cancellation-vs-timeout race precedence |
 | **Result Accuracy** | Integration | Success output matches output schema; errors only in fail channel |
 | **Execution Context** | Integration | Command API behavior across in-memory and durable adapters |
 | **Data Governance** | Integration | Redaction/opt-in behavior for sensitive payload categories |
@@ -224,6 +269,8 @@ test("engine.runWorkflowFile returns Effect<WorkflowOutputRecord, FrameworkError
 test("success path returns schema-compliant output only")
 test("failure path exposes FrameworkError with diagnosticsRef")
 test("timeout precedence: step > workflow > engine defaults")
+test("cancellation wins timeout race; timeout is retained as secondary diagnostic context")
+test("diagnostic events include the minimum conformance metadata fields")
 test("engine safety ceiling overrides excessive timeout")
 test("execution context command API records diagnostics and artifacts")
 test("sensitive fields are excluded unless explicitly opt-in")
