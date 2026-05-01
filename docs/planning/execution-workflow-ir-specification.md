@@ -36,8 +36,8 @@ The canonical source of behavior is the workflow IR shared by both surfaces.
 This workstream currently covers:
 
 - the role of the canonical IR
-- the workflow node model
-- the step contract model
+- the executable node model
+- the executable definition model
 - the execution result model
 - the context and scope model
 - the capability and policy model
@@ -100,9 +100,9 @@ The canonical model should contain at least these root entities:
 
 - `WorkflowDefinition`
 - `WorkflowInputSchema`
-- `WorkflowNode`
+- `ExecutableNode`
 - `StepTypeReference`
-- `StepContract`
+- `ExecutableDefinition`
 - `ExecutionPolicy`
 - `CapabilityRequirement`
 - `ExecutionResult`
@@ -118,7 +118,7 @@ A workflow definition should include:
 - workflow-level policies and defaults
 - runtime requirements, if declared separately from step requirements
 
-#### WorkflowNode
+#### ExecutableNode
 
 Every executable element in the workflow is a node.
 
@@ -141,11 +141,11 @@ Each node should have:
 - optional inherited policy overrides
 - explicit child nodes when the node is compound
 
-### Step Contract Model
+### Executable Definition Model
 
 An atomic step is not just an implementation target. It is a typed capability contract.
 
-Each step contract should declare:
+Each executable definition should declare:
 
 - `inputSchema`
 - `outputSchema`

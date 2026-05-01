@@ -8,12 +8,12 @@ It replaces the earlier concept sketch. The goal is to describe the concrete mod
 
 ## Core Decisions
 
-### 1. Executable definitions and workflow nodes are separate
+### 1. Executable definitions and executable nodes are separate
 
-- `ExecutableElementDefinition` is a reusable, versioned type contract.
-- `WorkflowNode` is an in-workflow instance that references a definition by versioned type id and binds concrete configuration, inputs, and child structure.
+- `ExecutableDefinition` is a reusable, versioned type contract.
+- `ExecutableNode` is an in-workflow instance that references a definition by versioned type id and binds concrete configuration, inputs, and child structure.
 - Definitions do not contain a method that creates runnable elements.
-- The engine owns compilation from `WorkflowNode` to runnable executable nodes through a registry.
+- The engine owns compilation from `ExecutableNode` to runnable executable nodes through a registry.
 
 This keeps reusable contracts separate from authored workflow structure.
 
@@ -28,7 +28,7 @@ This preserves a uniform model without letting plugins redefine workflow semanti
 
 ### 3. Registry resolution is explicit and split by node family
 
-- Workflow nodes reference executable types by explicit versioned identifiers such as `core.log@1`.
+- Executable nodes reference executable types by explicit versioned identifiers such as `core.log@1`.
 - The engine resolves those identifiers through a registry.
 - The registry uses separate builder contracts for atomic nodes and core control-flow nodes.
 - Atomic builders handle plugin-provided executable definitions.
@@ -67,8 +67,8 @@ Scope rules must therefore be represented in the IR, not hidden in engine intern
 ### 7. Capabilities are definition-first
 
 - Capability and permission requirements live primarily on executable definitions.
-- Workflow nodes may narrow, parameterize, or bind those declared capability slots.
-- Workflow nodes do not invent entirely new capabilities beyond what the definition contract allows.
+- Executable nodes may narrow, parameterize, or bind those declared capability slots.
+- Executable nodes do not invent entirely new capabilities beyond what the definition contract allows.
 
 This keeps executable definitions meaningful as reusable security contracts.
 
@@ -84,7 +84,7 @@ This avoids hidden output rules and keeps persistence and binding simple.
 
 ### 9. Atomic handler return value is the published output
 
-- For atomic executable elements, the handler success value becomes the node's published output by default.
+- For atomic executable nodes, the handler success value becomes the node's published output by default.
 - The engine validates that value against the node definition's `outputSchema`.
 - Handlers do not need to publish outputs procedurally through context for the common case.
 
@@ -123,7 +123,7 @@ This keeps the workflow contract stable even when internal orchestration changes
 
 ## Core Model
 
-### `ExecutableElementDefinition`
+### `ExecutableDefinition`
 
 A reusable, versioned contract for an executable type.
 
@@ -138,11 +138,11 @@ Expected responsibilities:
 
 Expected non-responsibilities:
 
-- no `createExecutableElement()` method
+- no `createExecutableNode()` method
 - no direct binding to workflow instance ids
 - no ownership of runtime scope state
 
-### `WorkflowNode`
+### `ExecutableNode`
 
 A concrete authored node in a workflow.
 
@@ -199,7 +199,7 @@ The engine is responsible for:
 
 - validating workflow definitions and bindings
 - resolving type ids through the registry
-- compiling workflow nodes into runnable executable nodes
+- compiling executable nodes into runnable executable nodes
 - enforcing control-flow semantics
 - managing scope boundaries and child contexts
 - enforcing capability and permission policy
